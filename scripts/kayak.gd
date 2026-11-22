@@ -132,8 +132,10 @@ func _check_rocks() -> void:
 		var rock_frame = river.frame_at(float(rock["s"]))
 		var rock_pos: Vector3 = rock_frame.center + rock_frame.right * float(rock["lateral"]) * river.HALF_WIDTH
 		var away := Vector3(global_position.x - rock_pos.x, 0.0, global_position.z - rock_pos.z)
-		var reach: float = _rock_reach(rock) + 0.65
-		if reach <= 0.65:
+		var submerged: bool = rock["submerged"]
+		var padding := 0.42 if submerged else 0.65
+		var reach: float = _rock_reach(rock) + padding
+		if reach <= padding:
 			continue
 		var dist := away.length()
 		if dist > reach:
@@ -142,13 +144,19 @@ func _check_rocks() -> void:
 			away = forward
 		else:
 			away /= dist
-		global_position += away * (reach - dist + 0.08)
-		velocity = velocity.slide(away)
-		velocity += away * maxf(speed * 0.45, 2.5)
-		velocity *= 0.5
+		if submerged:
+			global_position += away * minf(reach - dist, 0.16)
+			velocity *= 0.84
+			velocity += away * 0.4
+			hit_cooldown = 0.35
+		else:
+			global_position += away * (reach - dist + 0.08)
+			velocity = velocity.slide(away)
+			velocity += away * maxf(speed * 0.45, 2.5)
+			velocity *= 0.5
+			hit_cooldown = HIT_COOLDOWN
 		velocity.y = 0.0
 		speed = velocity.length()
-		hit_cooldown = HIT_COOLDOWN
 		return
 
 
@@ -198,7 +206,7 @@ func _apply_pose() -> void:
 	global_position = pos
 	var basis := Basis.looking_at(forward, Vector3.UP)
 	var slope: float = river.water_offset(distance + 1.2) - river.water_offset(distance - 1.2)
-	var pitch := clampf(-slope * 0.18, -0.32, 0.32)
+	var pitch := clampf(-slope * 0.42, -0.38, 0.38)
 	var heading_right := forward.cross(Vector3.UP).normalized()
 	basis = basis.rotated(heading_right, pitch)
 	var roll := clampf(_yaw_rate * 0.18, -0.22, 0.22)

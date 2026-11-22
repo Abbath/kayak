@@ -46,27 +46,23 @@ func sample(s: float) -> Vector3:
 
 
 func water_offset(s: float) -> float:
-	if s < 40.0:
+	if s <= 0.0:
 		return 0.0
 	var y := 0.0
-	var slot := int(floor(s / RAPID_SLOT))
-	for i in range(slot - 1, slot + 2):
-		if i < 1:
-			continue
+	var last_slot := int(floor(s / RAPID_SLOT)) + 1
+	for i in range(1, last_slot + 1):
 		var h := _hash(i * 9176 + 404)
 		if h % 3 != 0:
 			continue
-		var center := float(i) * RAPID_SLOT + 20.0 + float(h % 50)
-		var width := 26.0 + float((h / 7) % 18)
-		var amp := 2.4 + float((h / 19) % 140) / 100.0
-		if (h / 3) % 2 == 0:
-			amp = -amp
-		var dist := absf(s - center)
-		if dist >= width:
-			continue
-		var u := 1.0 - dist / width
+		var center := float(i) * RAPID_SLOT + 20.0 + float(h % 40)
+		var width := 22.0 + float((h / 7) % 16)
+		var drop := 2.3 + float((h / 19) % 130) / 100.0
+		var start := center - width * 0.5
+		if s <= start:
+			break
+		var u := clampf((s - start) / width, 0.0, 1.0)
 		var smooth := u * u * (3.0 - 2.0 * u)
-		y += amp * smooth
+		y -= drop * smooth
 	return y
 
 
@@ -214,8 +210,10 @@ func _valley(sections: Array[Frame]) -> ArrayMesh:
 		var b := sections[i + 1]
 		var ya := water_offset(-a.center.z)
 		var yb := water_offset(-b.center.z)
-		var ba := _beach_y(ya)
-		var bb := _beach_y(yb)
+		var ba := ya + 0.35
+		var bb := yb + 0.35
+		var ra := ya + RIM_HEIGHT
+		var rb := yb + RIM_HEIGHT
 		_quad_up(
 			st,
 			a.center + a.right * HALF_WIDTH + Vector3.UP * ya,
@@ -226,8 +224,8 @@ func _valley(sections: Array[Frame]) -> ArrayMesh:
 		_quad_up(
 			st,
 			a.center + a.right * shore + Vector3.UP * ba,
-			a.center + a.right * rim + Vector3.UP * RIM_HEIGHT,
-			b.center + b.right * rim + Vector3.UP * RIM_HEIGHT,
+			a.center + a.right * rim + Vector3.UP * ra,
+			b.center + b.right * rim + Vector3.UP * rb,
 			b.center + b.right * shore + Vector3.UP * bb
 		)
 		_quad_up(
@@ -239,17 +237,13 @@ func _valley(sections: Array[Frame]) -> ArrayMesh:
 		)
 		_quad_up(
 			st,
-			a.center - a.right * rim + Vector3.UP * RIM_HEIGHT,
+			a.center - a.right * rim + Vector3.UP * ra,
 			a.center - a.right * shore + Vector3.UP * ba,
 			b.center - b.right * shore + Vector3.UP * bb,
-			b.center - b.right * rim + Vector3.UP * RIM_HEIGHT
+			b.center - b.right * rim + Vector3.UP * rb
 		)
 	st.generate_normals()
 	return st.commit()
-
-
-func _beach_y(water_y: float) -> float:
-	return maxf(water_y + 0.25, 0.45)
 
 
 func _foam(s: float) -> float:
@@ -258,9 +252,31 @@ func _foam(s: float) -> float:
 
 
 func _ground(sections: Array[Frame]) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var inner := HALF_WIDTH + SHORE_WIDTH + WALL_WIDTH
 	var outer := inner + GROUND_WIDTH
-	return _ribbon(sections, inner, outer, RIM_HEIGHT, RIM_HEIGHT)
+	for i in range(sections.size() - 1):
+		var a := sections[i]
+		var b := sections[i + 1]
+		var ra := water_offset(-a.center.z) + RIM_HEIGHT
+		var rb := water_offset(-b.center.z) + RIM_HEIGHT
+		_quad_up(
+			st,
+			a.center + a.right * outer + Vector3.UP * ra,
+			a.center + a.right * inner + Vector3.UP * ra,
+			b.center + b.right * inner + Vector3.UP * rb,
+			b.center + b.right * outer + Vector3.UP * rb
+		)
+		_quad_up(
+			st,
+			a.center - a.right * inner + Vector3.UP * ra,
+			a.center - a.right * outer + Vector3.UP * ra,
+			b.center - b.right * outer + Vector3.UP * rb,
+			b.center - b.right * inner + Vector3.UP * rb
+		)
+	st.generate_normals()
+	return st.commit()
 
 
 func _quad_colored(st: SurfaceTool, a: Vector3, ca: float, b: Vector3, cb: float, c: Vector3, cc: float, d: Vector3, cd: float) -> void:
@@ -321,49 +337,43 @@ func _make_rock(index: int, i: int, submerged: bool) -> Dictionary:
 	var salt := 401 if submerged else 42
 	var h2 := _hash(index * 10007 + i * 7919 + salt)
 	var along := 14.0 + float(h2 % int(CHUNK_LENGTH - 24))
-	var base := _rock_radius(h2, submerged)
-	var max_lat := 0.34 if base > 1.5 else 0.62
-	var lateral := (float(h2 % 1000) / 1000.0) * max_lat * 2.0 - max_lat
-	var sx := 0.82 + float((h2 / 3) % 40) / 100.0
-	var sy := 0.5 + float((h2 / 11) % 55) / 100.0
-	var sz := 0.84 + float((h2 / 5) % 36) / 100.0
-	if submerged:
-		sy = minf(sy, 0.72)
 	var s := float(index) * CHUNK_LENGTH + along
 	var water_y := water_offset(s)
-	var vert := base * sy
-	var y := water_y + vert * 0.2
+	var bed := water_y - WATER_DEPTH
+	var width := _rock_width(h2, submerged)
+	var depth := width * (0.72 + float((h2 / 5) % 28) / 100.0)
+	var expose := 0.45 + float((h2 / 13) % 70) / 100.0
 	if submerged:
-		var bury := 0.1 + float((h2 / 13) % 75) / 100.0
-		y = water_y - bury - vert
-		var bed := water_y - WATER_DEPTH + vert + 0.12
-		if y < bed:
-			y = bed
+		expose = 0.02 + float((h2 / 17) % 10) / 100.0
+	var height := WATER_DEPTH + expose
+	var lateral_span := maxf(width, depth)
+	var max_lat := 0.36 if lateral_span > 1.15 else 0.6
+	var lateral := (float(h2 % 1000) / 1000.0) * max_lat * 2.0 - max_lat
 	return {
 		"s": s,
 		"lateral": lateral,
-		"radius": base * maxf(sx, sz),
-		"vr": vert,
-		"visual_radius": base,
-		"y": y,
+		"radius": lateral_span * 0.5,
+		"vr": height * 0.5,
+		"visual_radius": 0.5,
+		"y": bed + height * 0.5,
 		"submerged": submerged,
-		"sx": sx,
-		"sy": sy,
-		"sz": sz,
+		"sx": width,
+		"sy": height,
+		"sz": depth,
 	}
 
 
-func _rock_radius(h: int, submerged: bool) -> float:
+func _rock_width(h: int, submerged: bool) -> float:
 	var roll := h % 100
 	if submerged:
-		if roll < 55:
-			return 0.38 + float((h / 7) % 36) / 100.0
-		return 0.85 + float((h / 9) % 60) / 100.0
+		if roll < 60:
+			return 0.42 + float((h / 7) % 28) / 100.0
+		return 0.75 + float((h / 9) % 40) / 100.0
 	if roll < 34:
-		return 0.36 + float((h / 7) % 34) / 100.0
+		return 0.48 + float((h / 7) % 30) / 100.0
 	if roll < 70:
-		return 0.85 + float((h / 5) % 55) / 100.0
-	return 1.6 + float((h / 9) % 100) / 100.0
+		return 0.85 + float((h / 5) % 35) / 100.0
+	return 1.25 + float((h / 9) % 45) / 100.0
 
 
 func _trees_for(index: int) -> Array:
@@ -406,7 +416,7 @@ func _tree_node(tree: Dictionary) -> Node3D:
 	var node := Node3D.new()
 	var frame := frame_at(tree["s"])
 	var pos := frame.center + frame.right * float(tree["lateral"])
-	pos.y = RIM_HEIGHT
+	pos.y = water_offset(tree["s"]) + RIM_HEIGHT
 	node.position = pos
 
 	var trunk_h: float = tree["height"]
