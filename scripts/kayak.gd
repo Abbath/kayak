@@ -8,7 +8,9 @@ const PADDLE_ACCEL := 7.5
 const BRAKE_DECEL := 12.0
 const COAST_ACCEL := 4.5
 const SIDE_DECEL := 16.0
-const TURN_RATE := 1.75
+const TURN_RATE := 1.05
+const TURN_ACCEL := 1.35
+const TURN_RELEASE := 2.1
 const MAX_YAW := 0.95
 const HIT_COOLDOWN := 0.6
 const HULL_INSET := 0.8
@@ -22,6 +24,7 @@ var hit_cooldown := 0.0
 
 var _bob := 0.0
 var _steer := 0.0
+var _yaw_rate := 0.0
 var _paddle_phase := 0.0
 var _paddler: Node3D
 var _paddle: Node3D
@@ -77,7 +80,7 @@ func _physics_process(delta: float) -> void:
 		hit_cooldown -= delta
 	else:
 		_check_rocks()
-	_keep_in_river()
+	_keep_in_river(delta)
 	speed = velocity.length()
 	_apply_pose()
 	_animate_paddles(delta)
@@ -85,6 +88,7 @@ func _physics_process(delta: float) -> void:
 
 func reset() -> void:
 	_steer = 0.0
+	_yaw_rate = 0.0
 	_paddle_phase = 0.0
 	_bob = 0.0
 	hit_cooldown = 0.0
@@ -104,7 +108,10 @@ func _spawn_at_start() -> void:
 
 
 func _turn_heading(delta: float, tangent: Vector3) -> void:
-	forward = forward.rotated(Vector3.UP, -_steer * TURN_RATE * delta)
+	var target_rate := -_steer * TURN_RATE
+	var accel := TURN_ACCEL if absf(_steer) > 0.0 else TURN_RELEASE
+	_yaw_rate = move_toward(_yaw_rate, target_rate, accel * delta)
+	forward = forward.rotated(Vector3.UP, _yaw_rate * delta)
 	forward.y = 0.0
 	if forward.length_squared() < 0.001:
 		forward = tangent
@@ -112,9 +119,12 @@ func _turn_heading(delta: float, tangent: Vector3) -> void:
 	var delta_to_current: float = forward.signed_angle_to(tangent, Vector3.UP)
 	if absf(delta_to_current) <= MAX_YAW:
 		return
-	forward = forward.rotated(Vector3.UP, delta_to_current - signf(delta_to_current) * MAX_YAW)
+	var excess := delta_to_current - signf(delta_to_current) * MAX_YAW
+	forward = forward.rotated(Vector3.UP, excess * minf(1.0, 2.4 * delta))
 	forward.y = 0.0
 	forward = forward.normalized()
+	if _yaw_rate * delta_to_current < 0.0:
+		_yaw_rate = move_toward(_yaw_rate, 0.0, 2.6 * delta)
 
 
 func _check_rocks() -> void:
@@ -122,7 +132,9 @@ func _check_rocks() -> void:
 		var rock_frame = river.frame_at(float(rock["s"]))
 		var rock_pos: Vector3 = rock_frame.center + rock_frame.right * float(rock["lateral"]) * river.HALF_WIDTH
 		var away := Vector3(global_position.x - rock_pos.x, 0.0, global_position.z - rock_pos.z)
-		var reach: float = float(rock["radius"]) + 0.7
+		var reach: float = _rock_reach(rock) + 0.65
+		if reach <= 0.65:
+			continue
 		var dist := away.length()
 		if dist > reach:
 			continue
@@ -140,7 +152,18 @@ func _check_rocks() -> void:
 		return
 
 
-func _keep_in_river() -> void:
+func _rock_reach(rock: Dictionary) -> float:
+	var horiz: float = rock["radius"]
+	var vert: float = rock["vr"]
+	var depth: float = river.water_offset(float(rock["s"])) - float(rock["y"])
+	if depth <= 0.0:
+		return horiz
+	if vert <= depth:
+		return 0.0
+	return horiz * sqrt(1.0 - (depth / vert) * (depth / vert))
+
+
+func _keep_in_river(delta: float) -> void:
 	if global_position.z > 0.0:
 		global_position.z = 0.0
 		if velocity.z > 0.0:
@@ -155,38 +178,47 @@ func _keep_in_river() -> void:
 	var outward: float = velocity.dot(frame.right) * side
 	if outward > 0.0:
 		velocity -= frame.right * side * outward
-	if forward.dot(frame.right) * side > 0.0:
-		forward -= frame.right * forward.dot(frame.right)
-		if forward.dot(frame.tangent) <= 0.0 or forward.length_squared() < 0.001:
-			forward = frame.tangent
+	if forward.dot(frame.right) * side > 0.02:
+		var flat: Vector3 = forward - frame.right * forward.dot(frame.right)
+		if flat.dot(frame.tangent) <= 0.0 or flat.length_squared() < 0.001:
+			flat = frame.tangent
 		else:
-			forward = forward.normalized()
-		velocity = forward * maxf(velocity.dot(forward), 0.0)
+			flat = flat.normalized()
+		forward = forward.slerp(flat, 1.0 - exp(-2.0 * delta))
+		forward.y = 0.0
+		forward = forward.normalized()
+		_yaw_rate = move_toward(_yaw_rate, 0.0, 1.6 * delta)
 	velocity.y = 0.0
 
 
 func _apply_pose() -> void:
+	var water_y: float = river.water_offset(distance)
 	var pos := global_position
-	pos.y = 0.22 + sin(_bob * 2.3) * 0.04
+	pos.y = water_y + 0.22 + sin(_bob * 2.3) * 0.04
 	global_position = pos
 	var basis := Basis.looking_at(forward, Vector3.UP)
-	var roll := clampf(-_steer * 0.22, -0.28, 0.28)
+	var slope: float = river.water_offset(distance + 1.2) - river.water_offset(distance - 1.2)
+	var pitch := clampf(-slope * 0.18, -0.32, 0.32)
+	var heading_right := forward.cross(Vector3.UP).normalized()
+	basis = basis.rotated(heading_right, pitch)
+	var roll := clampf(_yaw_rate * 0.18, -0.22, 0.22)
 	basis = basis.rotated(forward, roll)
 	global_transform = Transform3D(basis, pos)
 
 
 func _animate_paddles(delta: float) -> void:
-	var rate := 1.5 + speed * 0.16 + absf(_steer) * 3.0
+	var steer_visual := clampf(-_yaw_rate / TURN_RATE, -1.0, 1.0)
+	var rate := 1.5 + speed * 0.16 + absf(steer_visual) * 3.0
 	_paddle_phase += delta * rate
 	var stroke := sin(_paddle_phase)
-	var steered := absf(_steer)
+	var steered := absf(steer_visual)
 	var sweep := lerpf(deg_to_rad(58.0), deg_to_rad(24.0), steered)
 	_paddle.rotation = Vector3(
 		deg_to_rad(-8.0 - absf(stroke) * 10.0),
-		deg_to_rad(_steer * -8.0),
-		stroke * sweep + _steer * deg_to_rad(42.0)
+		deg_to_rad(steer_visual * -8.0),
+		stroke * sweep + steer_visual * deg_to_rad(42.0)
 	)
-	_paddler.rotation = Vector3(deg_to_rad(-4.0), deg_to_rad(_steer * -10.0), deg_to_rad(_steer * 6.0))
+	_paddler.rotation = Vector3(deg_to_rad(-4.0), deg_to_rad(steer_visual * -10.0), deg_to_rad(steer_visual * 6.0))
 	_stretch_arm(_arm_l, _SHOULDER_L, _paddle.transform * _GRIP_L)
 	_stretch_arm(_arm_r, _SHOULDER_R, _paddle.transform * _GRIP_R)
 

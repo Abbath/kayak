@@ -3,9 +3,12 @@ extends Node3D
 const CHUNK_LENGTH := 64.0
 const STEP := 4.0
 const HALF_WIDTH := 8.0
-const BANK_WIDTH := 7.0
-const GROUND_WIDTH := 36.0
-const BANK_HEIGHT := 1.8
+const SHORE_WIDTH := 6.0
+const WALL_WIDTH := 18.0
+const GROUND_WIDTH := 40.0
+const RIM_HEIGHT := 7.8
+const WATER_DEPTH := 1.85
+const RAPID_SLOT := 150.0
 
 var chunks: Dictionary = {}
 
@@ -13,6 +16,8 @@ var _water_mat: ShaderMaterial
 var _dirt_mat: StandardMaterial3D
 var _grass_mat: StandardMaterial3D
 var _rock_mat: StandardMaterial3D
+var _under_mat: StandardMaterial3D
+var _bed_mat: StandardMaterial3D
 var _trunk_mat: StandardMaterial3D
 var _leaf_mat: StandardMaterial3D
 
@@ -28,7 +33,9 @@ func _ready() -> void:
 	_water_mat.shader = load("res://shaders/water.gdshader")
 	_dirt_mat = _standard(Color(0.48, 0.34, 0.2), 0.95)
 	_grass_mat = _standard(Color(0.24, 0.46, 0.18), 0.92)
-	_rock_mat = _standard(Color(0.45, 0.46, 0.5), 0.95)
+	_rock_mat = _standard(Color(0.48, 0.48, 0.52), 0.95)
+	_under_mat = _standard(Color(0.28, 0.36, 0.4), 0.55)
+	_bed_mat = _standard(Color(0.26, 0.3, 0.26), 0.95)
 	_trunk_mat = _standard(Color(0.36, 0.24, 0.12), 0.9)
 	_leaf_mat = _standard(Color(0.16, 0.42, 0.16), 0.85)
 
@@ -36,6 +43,31 @@ func _ready() -> void:
 func sample(s: float) -> Vector3:
 	var x := sin(s * 0.015) * 40.0 + sin(s * 0.004 + 1.7) * 25.0
 	return Vector3(x, 0.0, -s)
+
+
+func water_offset(s: float) -> float:
+	if s < 40.0:
+		return 0.0
+	var y := 0.0
+	var slot := int(floor(s / RAPID_SLOT))
+	for i in range(slot - 1, slot + 2):
+		if i < 1:
+			continue
+		var h := _hash(i * 9176 + 404)
+		if h % 3 != 0:
+			continue
+		var center := float(i) * RAPID_SLOT + 20.0 + float(h % 50)
+		var width := 26.0 + float((h / 7) % 18)
+		var amp := 2.4 + float((h / 19) % 140) / 100.0
+		if (h / 3) % 2 == 0:
+			amp = -amp
+		var dist := absf(s - center)
+		if dist >= width:
+			continue
+		var u := 1.0 - dist / width
+		var smooth := u * u * (3.0 - 2.0 * u)
+		y += amp * smooth
+	return y
 
 
 func frame_at(s: float) -> Frame:
@@ -89,10 +121,12 @@ func _build_chunk(index: int) -> Node3D:
 		sections.append(frame_at(s))
 		s += STEP
 
-	var water := _mesh_node(_ribbon(sections, 0.0, HALF_WIDTH, 0.0, 0.0), _water_mat, "Water")
-	water.extra_cull_margin = 1.0
+	var water := _mesh_node(_water_surface(sections), _water_mat, "Water")
+	water.extra_cull_margin = 1.5
+	water.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	chunk.add_child(water)
-	chunk.add_child(_mesh_node(_banks(sections), _dirt_mat, "Banks"))
+	chunk.add_child(_mesh_node(_river_bed(sections), _bed_mat, "Bed"))
+	chunk.add_child(_mesh_node(_valley(sections), _dirt_mat, "Banks"))
 	chunk.add_child(_mesh_node(_ground(sections), _grass_mat, "Ground"))
 
 	var rocks := _rocks_for(index)
@@ -128,35 +162,128 @@ func _ribbon(sections: Array[Frame], inner: float, outer: float, y_inner: float,
 	return st.commit()
 
 
-func _banks(sections: Array[Frame]) -> ArrayMesh:
+func _water_surface(sections: Array[Frame]) -> ArrayMesh:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var outer := HALF_WIDTH + BANK_WIDTH
 	for i in range(sections.size() - 1):
 		var a := sections[i]
 		var b := sections[i + 1]
-		_quad_up(
+		var sa := -a.center.z
+		var sb := -b.center.z
+		var ya := water_offset(sa)
+		var yb := water_offset(sb)
+		var fa := _foam(sa)
+		var fb := _foam(sb)
+		_quad_colored(
 			st,
-			a.center + a.right * HALF_WIDTH,
-			a.center + a.right * outer + Vector3.UP * BANK_HEIGHT,
-			b.center + b.right * outer + Vector3.UP * BANK_HEIGHT,
-			b.center + b.right * HALF_WIDTH
-		)
-		_quad_up(
-			st,
-			a.center - a.right * outer + Vector3.UP * BANK_HEIGHT,
-			a.center - a.right * HALF_WIDTH,
-			b.center - b.right * HALF_WIDTH,
-			b.center - b.right * outer + Vector3.UP * BANK_HEIGHT
+			a.center + a.right * HALF_WIDTH + Vector3.UP * ya, fa,
+			a.center - a.right * HALF_WIDTH + Vector3.UP * ya, fa,
+			b.center - b.right * HALF_WIDTH + Vector3.UP * yb, fb,
+			b.center + b.right * HALF_WIDTH + Vector3.UP * yb, fb
 		)
 	st.generate_normals()
 	return st.commit()
 
 
+func _river_bed(sections: Array[Frame]) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in range(sections.size() - 1):
+		var a := sections[i]
+		var b := sections[i + 1]
+		var ya := water_offset(-a.center.z) - WATER_DEPTH
+		var yb := water_offset(-b.center.z) - WATER_DEPTH
+		_quad_up(
+			st,
+			a.center + a.right * HALF_WIDTH + Vector3.UP * ya,
+			a.center - a.right * HALF_WIDTH + Vector3.UP * ya,
+			b.center - b.right * HALF_WIDTH + Vector3.UP * yb,
+			b.center + b.right * HALF_WIDTH + Vector3.UP * yb
+		)
+	st.generate_normals()
+	return st.commit()
+
+
+func _valley(sections: Array[Frame]) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var shore := HALF_WIDTH + SHORE_WIDTH
+	var rim := shore + WALL_WIDTH
+	for i in range(sections.size() - 1):
+		var a := sections[i]
+		var b := sections[i + 1]
+		var ya := water_offset(-a.center.z)
+		var yb := water_offset(-b.center.z)
+		var ba := _beach_y(ya)
+		var bb := _beach_y(yb)
+		_quad_up(
+			st,
+			a.center + a.right * HALF_WIDTH + Vector3.UP * ya,
+			a.center + a.right * shore + Vector3.UP * ba,
+			b.center + b.right * shore + Vector3.UP * bb,
+			b.center + b.right * HALF_WIDTH + Vector3.UP * yb
+		)
+		_quad_up(
+			st,
+			a.center + a.right * shore + Vector3.UP * ba,
+			a.center + a.right * rim + Vector3.UP * RIM_HEIGHT,
+			b.center + b.right * rim + Vector3.UP * RIM_HEIGHT,
+			b.center + b.right * shore + Vector3.UP * bb
+		)
+		_quad_up(
+			st,
+			a.center - a.right * shore + Vector3.UP * ba,
+			a.center - a.right * HALF_WIDTH + Vector3.UP * ya,
+			b.center - b.right * HALF_WIDTH + Vector3.UP * yb,
+			b.center - b.right * shore + Vector3.UP * bb
+		)
+		_quad_up(
+			st,
+			a.center - a.right * rim + Vector3.UP * RIM_HEIGHT,
+			a.center - a.right * shore + Vector3.UP * ba,
+			b.center - b.right * shore + Vector3.UP * bb,
+			b.center - b.right * rim + Vector3.UP * RIM_HEIGHT
+		)
+	st.generate_normals()
+	return st.commit()
+
+
+func _beach_y(water_y: float) -> float:
+	return maxf(water_y + 0.25, 0.45)
+
+
+func _foam(s: float) -> float:
+	var slope := absf(water_offset(s + 2.0) - water_offset(s - 2.0))
+	return clampf(slope * 0.55, 0.0, 1.0)
+
+
 func _ground(sections: Array[Frame]) -> ArrayMesh:
-	var inner := HALF_WIDTH + BANK_WIDTH
+	var inner := HALF_WIDTH + SHORE_WIDTH + WALL_WIDTH
 	var outer := inner + GROUND_WIDTH
-	return _ribbon(sections, inner, outer, BANK_HEIGHT, BANK_HEIGHT)
+	return _ribbon(sections, inner, outer, RIM_HEIGHT, RIM_HEIGHT)
+
+
+func _quad_colored(st: SurfaceTool, a: Vector3, ca: float, b: Vector3, cb: float, c: Vector3, cc: float, d: Vector3, cd: float) -> void:
+	var normal_y := (b - a).cross(d - a).y
+	if normal_y > 0.0:
+		_colored_vertex(st, a, ca)
+		_colored_vertex(st, d, cd)
+		_colored_vertex(st, b, cb)
+		_colored_vertex(st, d, cd)
+		_colored_vertex(st, c, cc)
+		_colored_vertex(st, b, cb)
+	else:
+		_colored_vertex(st, a, ca)
+		_colored_vertex(st, b, cb)
+		_colored_vertex(st, d, cd)
+		_colored_vertex(st, d, cd)
+		_colored_vertex(st, b, cb)
+		_colored_vertex(st, c, cc)
+
+
+func _colored_vertex(st: SurfaceTool, point: Vector3, foam: float) -> void:
+	st.set_color(Color(1.0, 1.0, 1.0, foam))
+	st.add_vertex(point)
 
 
 func _quad_up(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> void:
@@ -180,21 +307,63 @@ func _quad_up(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3) -
 
 
 func _rocks_for(index: int) -> Array:
-	var count := _hash(index * 9781 + 12345) % 3
 	var rocks: Array = []
-	for i in count:
-		var h2 := _hash(index * 10007 + i * 7919 + 42)
-		var along := 12.0 + float(i) * (CHUNK_LENGTH * 0.42) + float(h2 % 14)
-		var lateral := (float(h2 % 1000) / 1000.0) * 1.1 - 0.55
-		if i == 1 and not rocks.is_empty() and abs(lateral - float(rocks[0]["lateral"])) < 0.35:
-			lateral = -float(rocks[0]["lateral"])
-		var radius := 0.75 + float((h2 / 13) % 50) / 100.0
-		rocks.append({
-			"s": float(index) * CHUNK_LENGTH + along,
-			"lateral": lateral,
-			"radius": radius,
-		})
+	var surface_count := _hash(index * 9781 + 12345) % 3
+	var under_count := _hash(index * 3187 + 777) % 3
+	for i in surface_count:
+		rocks.append(_make_rock(index, i, false))
+	for i in under_count:
+		rocks.append(_make_rock(index, i + 8, true))
 	return rocks
+
+
+func _make_rock(index: int, i: int, submerged: bool) -> Dictionary:
+	var salt := 401 if submerged else 42
+	var h2 := _hash(index * 10007 + i * 7919 + salt)
+	var along := 14.0 + float(h2 % int(CHUNK_LENGTH - 24))
+	var base := _rock_radius(h2, submerged)
+	var max_lat := 0.34 if base > 1.5 else 0.62
+	var lateral := (float(h2 % 1000) / 1000.0) * max_lat * 2.0 - max_lat
+	var sx := 0.82 + float((h2 / 3) % 40) / 100.0
+	var sy := 0.5 + float((h2 / 11) % 55) / 100.0
+	var sz := 0.84 + float((h2 / 5) % 36) / 100.0
+	if submerged:
+		sy = minf(sy, 0.72)
+	var s := float(index) * CHUNK_LENGTH + along
+	var water_y := water_offset(s)
+	var vert := base * sy
+	var y := water_y + vert * 0.2
+	if submerged:
+		var bury := 0.1 + float((h2 / 13) % 75) / 100.0
+		y = water_y - bury - vert
+		var bed := water_y - WATER_DEPTH + vert + 0.12
+		if y < bed:
+			y = bed
+	return {
+		"s": s,
+		"lateral": lateral,
+		"radius": base * maxf(sx, sz),
+		"vr": vert,
+		"visual_radius": base,
+		"y": y,
+		"submerged": submerged,
+		"sx": sx,
+		"sy": sy,
+		"sz": sz,
+	}
+
+
+func _rock_radius(h: int, submerged: bool) -> float:
+	var roll := h % 100
+	if submerged:
+		if roll < 55:
+			return 0.38 + float((h / 7) % 36) / 100.0
+		return 0.85 + float((h / 9) % 60) / 100.0
+	if roll < 34:
+		return 0.36 + float((h / 7) % 34) / 100.0
+	if roll < 70:
+		return 0.85 + float((h / 5) % 55) / 100.0
+	return 1.6 + float((h / 9) % 100) / 100.0
 
 
 func _trees_for(index: int) -> Array:
@@ -204,7 +373,8 @@ func _trees_for(index: int) -> Array:
 		var along := 4.0 + float(h % int(CHUNK_LENGTH - 8))
 		var side := 1.0 if (h & 1) == 0 else -1.0
 		var inset := float((h / 3) % 1000) / 1000.0
-		var lateral := side * (HALF_WIDTH + BANK_WIDTH + 2.5 + inset * (GROUND_WIDTH - 6.0))
+		var rim := HALF_WIDTH + SHORE_WIDTH + WALL_WIDTH
+		var lateral := side * (rim + 2.5 + inset * (GROUND_WIDTH - 8.0))
 		var height := 1.7 + float((h / 11) % 100) / 100.0 * 1.5
 		trees.append({
 			"s": float(index) * CHUNK_LENGTH + along,
@@ -217,18 +387,18 @@ func _trees_for(index: int) -> Array:
 func _rock_node(rock: Dictionary) -> MeshInstance3D:
 	var inst := MeshInstance3D.new()
 	var mesh := SphereMesh.new()
-	var radius: float = rock["radius"]
+	var radius: float = rock["visual_radius"]
 	mesh.radius = radius
 	mesh.height = radius * 2.0
 	mesh.radial_segments = 10
 	mesh.rings = 6
 	inst.mesh = mesh
-	inst.material_override = _rock_mat
+	inst.material_override = _under_mat if rock["submerged"] else _rock_mat
 	var frame := frame_at(rock["s"])
 	var pos := frame.center + frame.right * float(rock["lateral"]) * HALF_WIDTH
-	pos.y = radius * 0.32
+	pos.y = rock["y"]
 	inst.position = pos
-	inst.scale = Vector3(1.05, 0.72, 1.05)
+	inst.scale = Vector3(rock["sx"], rock["sy"], rock["sz"])
 	return inst
 
 
@@ -236,7 +406,7 @@ func _tree_node(tree: Dictionary) -> Node3D:
 	var node := Node3D.new()
 	var frame := frame_at(tree["s"])
 	var pos := frame.center + frame.right * float(tree["lateral"])
-	pos.y = BANK_HEIGHT
+	pos.y = RIM_HEIGHT
 	node.position = pos
 
 	var trunk_h: float = tree["height"]
