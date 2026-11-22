@@ -34,13 +34,12 @@ func _process(delta: float) -> void:
 		kayak.reset()
 		_snap_camera = true
 	_update_camera(delta)
-	distance_label.text = "Distance  %d m" % int(kayak.distance)
+	distance_label.text = "Distance  %d m    Speed  %d" % [int(kayak.distance), int(round(kayak.speed))]
 
 
 func _update_camera(delta: float) -> void:
-	var frame = river.frame_at(kayak.distance)
-	var tangent: Vector3 = frame.tangent
-	var desired: Vector3 = kayak.global_position - tangent * 5.6 + Vector3.UP * 2.6
+	var heading: Vector3 = kayak.forward
+	var desired: Vector3 = kayak.global_position - heading * 5.6 + Vector3.UP * 2.6
 	if kayak.hit_cooldown > 0.35:
 		desired += Vector3(sin(kayak.hit_cooldown * 70.0) * 0.12, 0.0, 0.0)
 	if _snap_camera:
@@ -49,7 +48,7 @@ func _update_camera(delta: float) -> void:
 	else:
 		var blend := 1.0 - exp(-3.5 * delta)
 		camera.global_position = camera.global_position.lerp(desired, blend)
-	camera.look_at(kayak.global_position + tangent * 6.0 + Vector3.UP * 0.4, Vector3.UP)
+	camera.look_at(kayak.global_position + heading * 6.0 + Vector3.UP * 0.4, Vector3.UP)
 
 
 func _setup_world() -> void:
@@ -94,7 +93,7 @@ func _setup_hud() -> void:
 	distance_label = Label.new()
 	distance_label.name = "Distance"
 	distance_label.position = Vector2(24, 18)
-	distance_label.size = Vector2(420, 48)
+	distance_label.size = Vector2(640, 48)
 	distance_label.text = "Distance  0 m"
 	_style_label(distance_label, 32)
 	layer.add_child(distance_label)
@@ -110,7 +109,7 @@ func _setup_hud() -> void:
 	hint.offset_top = -56.0
 	hint.offset_bottom = -16.0
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint.text = "A / D or Left / Right to steer     R to restart"
+	hint.text = "A / D to turn    W to paddle    S to brake    R to restart"
 	_style_label(hint, 22)
 	layer.add_child(hint)
 
@@ -125,6 +124,8 @@ func _style_label(label: Label, font_size: int) -> void:
 func _ensure_input() -> void:
 	_bind("steer_left", [KEY_A, KEY_LEFT])
 	_bind("steer_right", [KEY_D, KEY_RIGHT])
+	_bind("paddle", [KEY_W, KEY_UP])
+	_bind("brake", [KEY_S, KEY_DOWN])
 	_bind("restart", [KEY_R])
 
 
