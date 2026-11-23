@@ -382,21 +382,25 @@ func _make_rock(index: int, i: int, submerged: bool) -> Dictionary:
 	var expose := 0.45 + float((h2 / 13) % 70) / 100.0
 	if submerged:
 		expose = 0.02 + float((h2 / 17) % 10) / 100.0
-	var height := WATER_DEPTH + expose
-	var lateral_span := maxf(width, depth)
+	var rise := WATER_DEPTH + expose
+	# The belly sits in the bed, so the rock has to be about as wide as it is tall
+	# or the buried half reads as a pillar.
+	var span_x := maxf(width, rise * 0.95)
+	var span_z := maxf(depth, rise * 0.78)
+	var lateral_span := maxf(span_x, span_z)
 	var max_lat := 0.36 if lateral_span > 1.15 else 0.6
 	var lateral := (float(h2 % 1000) / 1000.0) * max_lat * 2.0 - max_lat
 	return {
 		"s": s,
 		"lateral": lateral,
 		"radius": lateral_span * 0.5,
-		"vr": height * 0.5,
+		"vr": rise,
 		"visual_radius": 0.5,
-		"y": bed + height * 0.5,
+		"y": bed,
 		"submerged": submerged,
-		"sx": width,
-		"sy": height,
-		"sz": depth,
+		"sx": span_x,
+		"sy": rise * 2.0,
+		"sz": span_z,
 	}
 
 

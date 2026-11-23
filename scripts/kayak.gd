@@ -192,11 +192,16 @@ func _tick_remount(delta: float, frame) -> void:
 func _integrate_roll(delta: float) -> void:
 	var slope: float = river.water_offset(distance + 1.2) - river.water_offset(distance - 1.2)
 	var rapid := clampf(absf(slope) / 0.45, 0.0, 1.0)
+	var frame = river.frame_at(distance)
+	var angle := forward.signed_angle_to(frame.tangent, Vector3.UP)
+	var sideways := absf(angle)
+	var broach := rapid * clampf((sideways - 0.55) / 0.35, 0.0, 1.0)
 	var speed_factor := clampf(speed / 6.0, 0.35, 1.35)
 	var lean := clampf(-_yaw_rate * 0.55 * speed_factor, -0.9, 0.9)
-	lean *= lerpf(1.0, 1.45, rapid)
+	lean *= lerpf(1.0, 1.35, rapid)
+	lean += signf(angle) * broach * 3.0
 	_roll_vel += sin(_bob * 11.0) * rapid * 2.4 * delta
-	var stiffness := lerpf(9.0, 3.2, rapid)
+	var stiffness := lerpf(9.0, 2.4, clampf(rapid + broach, 0.0, 1.0))
 	if absf(_roll) < TIP_ANGLE:
 		_roll_vel += -(_roll - lean) * stiffness * delta
 	else:
@@ -333,12 +338,19 @@ func _apply_pose() -> void:
 	var pos := global_position
 	pos.y = water_y + 0.22 + sin(_bob * 2.3) * 0.04
 	global_position = pos
-	var basis := Basis.looking_at(forward, Vector3.UP)
-	var slope: float = river.water_offset(distance + 1.2) - river.water_offset(distance - 1.2)
-	var pitch := clampf(-slope * 0.42, -0.38, 0.38)
-	var heading_right := forward.cross(Vector3.UP).normalized()
-	basis = basis.rotated(heading_right, pitch)
-	basis = basis.rotated(forward, _roll)
+	var step := 0.6
+	var dh_ds: float = (river.water_offset(distance + step) - river.water_offset(distance - step)) / (step * 2.0)
+	var normal := Vector3(0.0, 1.0, dh_ds).normalized()
+	var heading := Vector3(forward.x, 0.0, forward.z)
+	if heading.length_squared() < 0.0001:
+		heading = Vector3(0.0, 0.0, -1.0)
+	heading = heading.normalized()
+	var along := heading - normal * heading.dot(normal)
+	if along.length_squared() < 0.0001:
+		along = heading
+	along = along.normalized()
+	var basis := Basis.looking_at(along, normal)
+	basis = basis.rotated(along, _roll)
 	global_transform = Transform3D(basis, pos)
 
 
