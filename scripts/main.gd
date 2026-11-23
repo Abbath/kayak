@@ -7,7 +7,10 @@ var river
 var kayak
 var camera: Camera3D
 var distance_label: Label
+var hint_label: Label
 var _snap_camera := true
+
+const HINT_CONTROLS := "A / D to turn    W to paddle    S to brake    R to restart"
 
 
 func _ready() -> void:
@@ -35,11 +38,18 @@ func _process(delta: float) -> void:
 		_snap_camera = true
 	_update_camera(delta)
 	distance_label.text = "Distance  %d m    Speed  %d" % [int(kayak.distance), int(round(kayak.speed))]
+	if kayak.remounting:
+		hint_label.text = "Climbing back in..."
+	elif kayak.capsized:
+		hint_label.text = "Capsized — hold W to roll up"
+	else:
+		hint_label.text = HINT_CONTROLS
 
 
 func _update_camera(delta: float) -> void:
 	var heading: Vector3 = kayak.forward
-	var desired: Vector3 = kayak.global_position - heading * 5.6 + Vector3.UP * 2.6
+	var height := 1.55 if kayak.capsized or kayak.remounting else 2.6
+	var desired: Vector3 = kayak.global_position - heading * 5.6 + Vector3.UP * height
 	if kayak.hit_cooldown > 0.35:
 		desired += Vector3(sin(kayak.hit_cooldown * 70.0) * 0.12, 0.0, 0.0)
 	if _snap_camera:
@@ -98,20 +108,20 @@ func _setup_hud() -> void:
 	_style_label(distance_label, 32)
 	layer.add_child(distance_label)
 
-	var hint := Label.new()
-	hint.name = "Hint"
-	hint.anchor_left = 0.0
-	hint.anchor_right = 1.0
-	hint.anchor_top = 1.0
-	hint.anchor_bottom = 1.0
-	hint.offset_left = 0.0
-	hint.offset_right = 0.0
-	hint.offset_top = -56.0
-	hint.offset_bottom = -16.0
-	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint.text = "A / D to turn    W to paddle    S to brake    R to restart"
-	_style_label(hint, 22)
-	layer.add_child(hint)
+	hint_label = Label.new()
+	hint_label.name = "Hint"
+	hint_label.anchor_left = 0.0
+	hint_label.anchor_right = 1.0
+	hint_label.anchor_top = 1.0
+	hint_label.anchor_bottom = 1.0
+	hint_label.offset_left = 0.0
+	hint_label.offset_right = 0.0
+	hint_label.offset_top = -56.0
+	hint_label.offset_bottom = -16.0
+	hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint_label.text = HINT_CONTROLS
+	_style_label(hint_label, 22)
+	layer.add_child(hint_label)
 
 
 func _style_label(label: Label, font_size: int) -> void:

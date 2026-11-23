@@ -214,6 +214,24 @@ func _valley(sections: Array[Frame]) -> ArrayMesh:
 		var bb := yb + 0.35
 		var ra := ya + RIM_HEIGHT
 		var rb := yb + RIM_HEIGHT
+		var da := ya - WATER_DEPTH
+		var db := yb - WATER_DEPTH
+		_quad_facing(
+			st,
+			a.center + a.right * HALF_WIDTH + Vector3.UP * ya,
+			a.center + a.right * HALF_WIDTH + Vector3.UP * da,
+			b.center + b.right * HALF_WIDTH + Vector3.UP * db,
+			b.center + b.right * HALF_WIDTH + Vector3.UP * yb,
+			-a.right
+		)
+		_quad_facing(
+			st,
+			a.center - a.right * HALF_WIDTH + Vector3.UP * ya,
+			a.center - a.right * HALF_WIDTH + Vector3.UP * da,
+			b.center - b.right * HALF_WIDTH + Vector3.UP * db,
+			b.center - b.right * HALF_WIDTH + Vector3.UP * yb,
+			a.right
+		)
 		_quad_up(
 			st,
 			a.center + a.right * HALF_WIDTH + Vector3.UP * ya,
@@ -300,6 +318,25 @@ func _quad_colored(st: SurfaceTool, a: Vector3, ca: float, b: Vector3, cb: float
 func _colored_vertex(st: SurfaceTool, point: Vector3, foam: float) -> void:
 	st.set_color(Color(1.0, 1.0, 1.0, foam))
 	st.add_vertex(point)
+
+
+func _quad_facing(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3, facing: Vector3) -> void:
+	# Clockwise is the front face, so the right-handed cross product points backward.
+	var normal := (b - a).cross(d - a)
+	if normal.dot(facing) > 0.0:
+		st.add_vertex(a)
+		st.add_vertex(d)
+		st.add_vertex(b)
+		st.add_vertex(d)
+		st.add_vertex(c)
+		st.add_vertex(b)
+	else:
+		st.add_vertex(a)
+		st.add_vertex(b)
+		st.add_vertex(d)
+		st.add_vertex(d)
+		st.add_vertex(b)
+		st.add_vertex(c)
 
 
 func _quad_up(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> void:

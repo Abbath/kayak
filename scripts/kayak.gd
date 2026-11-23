@@ -14,6 +14,16 @@ const TURN_RELEASE := 2.1
 const MAX_YAW := 0.95
 const HIT_COOLDOWN := 0.6
 const HULL_INSET := 0.8
+const TIP_ANGLE := 1.05
+const CAPSIZE_ANGLE := 1.57
+const RECOVER_ANGLE := 0.61
+const RECOVER_TIME := 4.0
+const REMOUNT_TIME := 1.5
+const REMOUNT_SPEED := 1.4
+const BANK_ROLL := 1.15
+const ROCK_ROLL := 9.0
+const SCRAPE_ROLL := 0.65
+const ESKIMO_ACCEL := 5.5
 
 var river
 var distance := 0.0
@@ -21,10 +31,19 @@ var velocity := Vector3.ZERO
 var forward := Vector3(0.0, 0.0, -1.0)
 var speed := START_SPEED
 var hit_cooldown := 0.0
+var capsized := false
+var remounting := false
 
 var _bob := 0.0
 var _steer := 0.0
 var _yaw_rate := 0.0
+var _roll := 0.0
+var _roll_vel := 0.0
+var _capsize_side := 1.0
+var _recover_left := 0.0
+var _remount_from := 0.0
+var _remount_t := 0.0
+var _banked := false
 var _paddle_phase := 0.0
 var _paddler: Node3D
 var _paddle: Node3D
@@ -51,26 +70,12 @@ func _physics_process(delta: float) -> void:
 
 	var s := maxf(-global_position.z, 0.0)
 	var frame = river.frame_at(s)
-	_turn_heading(delta, frame.tangent)
-	var heading_right := forward.cross(Vector3.UP).normalized()
-	var forward_speed := velocity.dot(forward)
-	var side_speed := velocity.dot(heading_right)
-
-	var along_current: float = clampf(forward.dot(frame.tangent), 0.0, 1.0)
-	var target := lerpf(3.5, COAST_SPEED, along_current)
-	var accel := COAST_ACCEL
-	if Input.is_action_pressed("brake"):
-		target = BRAKE_SPEED
-		accel = BRAKE_DECEL
-	elif Input.is_action_pressed("paddle"):
-		target = lerpf(6.0, PADDLE_SPEED, along_current)
-		accel = PADDLE_ACCEL
-
-	forward_speed = move_toward(forward_speed, target, accel * delta)
-	side_speed = move_toward(side_speed, 0.0, SIDE_DECEL * delta)
-	velocity = forward * forward_speed + heading_right * side_speed
-	velocity.y = 0.0
-	speed = velocity.length()
+	if remounting:
+		_tick_remount(delta, frame)
+	elif capsized:
+		_tick_capsized(delta, frame)
+	else:
+		_tick_upright(delta, frame)
 
 	global_position += velocity * delta
 	_bob += delta
@@ -78,9 +83,11 @@ func _physics_process(delta: float) -> void:
 	river.update_chunks(distance)
 	if hit_cooldown > 0.0:
 		hit_cooldown -= delta
-	else:
+	elif not capsized and not remounting:
 		_check_rocks()
 	_keep_in_river(delta)
+	if not capsized and not remounting:
+		_integrate_roll(delta)
 	speed = velocity.length()
 	_apply_pose()
 	_animate_paddles(delta)
@@ -92,6 +99,14 @@ func reset() -> void:
 	_paddle_phase = 0.0
 	_bob = 0.0
 	hit_cooldown = 0.0
+	_roll = 0.0
+	_roll_vel = 0.0
+	capsized = false
+	remounting = false
+	_capsize_side = 1.0
+	_recover_left = 0.0
+	_remount_t = 0.0
+	_banked = false
 	_spawn_at_start()
 
 
@@ -105,6 +120,112 @@ func _spawn_at_start() -> void:
 	river.update_chunks(distance)
 	_apply_pose()
 	_animate_paddles(0.0)
+
+
+func _tick_upright(delta: float, frame) -> void:
+	_turn_heading(delta, frame.tangent)
+	var heading_right := forward.cross(Vector3.UP).normalized()
+	var forward_speed := velocity.dot(forward)
+	var side_speed := velocity.dot(heading_right)
+	var along_current: float = clampf(forward.dot(frame.tangent), 0.0, 1.0)
+	var target := lerpf(3.5, COAST_SPEED, along_current)
+	var accel := COAST_ACCEL
+	if Input.is_action_pressed("brake"):
+		target = BRAKE_SPEED
+		accel = BRAKE_DECEL
+	elif Input.is_action_pressed("paddle"):
+		target = lerpf(6.0, PADDLE_SPEED, along_current)
+		accel = PADDLE_ACCEL
+	forward_speed = move_toward(forward_speed, target, accel * delta)
+	side_speed = move_toward(side_speed, 0.0, SIDE_DECEL * delta)
+	velocity = forward * forward_speed + heading_right * side_speed
+	velocity.y = 0.0
+	speed = velocity.length()
+
+
+func _tick_capsized(delta: float, frame) -> void:
+	_recover_left -= delta
+	if Input.is_action_pressed("paddle"):
+		_roll_vel += -_capsize_side * ESKIMO_ACCEL * delta
+	else:
+		_roll_vel += (_capsize_side * PI - _roll) * 4.0 * delta
+	_roll_vel *= exp(-2.2 * delta)
+	_roll = clampf(_roll + _roll_vel * delta, -PI, PI)
+	if _roll * _capsize_side <= RECOVER_ANGLE:
+		capsized = false
+		_roll_vel *= 0.35
+		return
+	if _recover_left <= 0.0:
+		_begin_remount()
+		return
+	var along: float = maxf(velocity.dot(frame.tangent), 1.5)
+	velocity = velocity.lerp(frame.tangent * minf(along, 3.2), 1.0 - exp(-1.2 * delta))
+	velocity.y = 0.0
+	forward = forward.slerp(frame.tangent, 1.0 - exp(-0.6 * delta))
+	forward.y = 0.0
+	if forward.length_squared() < 0.001:
+		forward = frame.tangent
+	forward = forward.normalized()
+
+
+func _tick_remount(delta: float, frame) -> void:
+	_remount_t += delta
+	var u := clampf(_remount_t / REMOUNT_TIME, 0.0, 1.0)
+	var smooth := u * u * (3.0 - 2.0 * u)
+	_roll = lerpf(_remount_from, 0.0, smooth)
+	_roll_vel = 0.0
+	velocity = velocity.lerp(Vector3.ZERO, 1.0 - exp(-6.0 * delta))
+	velocity.y = 0.0
+	forward = forward.slerp(frame.tangent, 1.0 - exp(-1.5 * delta))
+	forward.y = 0.0
+	if forward.length_squared() < 0.001:
+		forward = frame.tangent
+	forward = forward.normalized()
+	if u < 1.0:
+		return
+	remounting = false
+	_roll = 0.0
+	velocity = forward * REMOUNT_SPEED
+	speed = REMOUNT_SPEED
+
+
+func _integrate_roll(delta: float) -> void:
+	var slope: float = river.water_offset(distance + 1.2) - river.water_offset(distance - 1.2)
+	var rapid := clampf(absf(slope) / 0.45, 0.0, 1.0)
+	var speed_factor := clampf(speed / 6.0, 0.35, 1.35)
+	var lean := clampf(-_yaw_rate * 0.55 * speed_factor, -0.9, 0.9)
+	lean *= lerpf(1.0, 1.45, rapid)
+	_roll_vel += sin(_bob * 11.0) * rapid * 2.4 * delta
+	var stiffness := lerpf(9.0, 3.2, rapid)
+	if absf(_roll) < TIP_ANGLE:
+		_roll_vel += -(_roll - lean) * stiffness * delta
+	else:
+		_roll_vel += signf(_roll) * lerpf(3.4, 5.2, rapid) * delta
+	_roll_vel *= exp(-3.4 * delta)
+	_roll = clampf(_roll + _roll_vel * delta, -PI, PI)
+	if absf(_roll) >= CAPSIZE_ANGLE:
+		_begin_capsize()
+
+
+func _begin_capsize() -> void:
+	capsized = true
+	_capsize_side = signf(_roll)
+	if _capsize_side == 0.0:
+		_capsize_side = 1.0
+	_recover_left = RECOVER_TIME
+	velocity *= 0.45
+	velocity.y = 0.0
+	speed = velocity.length()
+	_yaw_rate = 0.0
+
+
+func _begin_remount() -> void:
+	capsized = false
+	remounting = true
+	_remount_from = _roll
+	_remount_t = 0.0
+	_roll_vel = 0.0
+	_yaw_rate = 0.0
 
 
 func _turn_heading(delta: float, tangent: Vector3) -> void:
@@ -155,6 +276,10 @@ func _check_rocks() -> void:
 			velocity += away * maxf(speed * 0.45, 2.5)
 			velocity *= 0.5
 			hit_cooldown = HIT_COOLDOWN
+		var heading_right := forward.cross(Vector3.UP).normalized()
+		var lateral_off: float = (rock_pos - global_position).dot(heading_right)
+		var rock_side := clampf(lateral_off / 0.55, -1.0, 1.0)
+		_roll_vel -= rock_side * (SCRAPE_ROLL if submerged else ROCK_ROLL)
 		velocity.y = 0.0
 		speed = velocity.length()
 		return
@@ -180,10 +305,14 @@ func _keep_in_river(delta: float) -> void:
 	var lateral: float = (global_position - frame.center).dot(frame.right)
 	var limit: float = river.HALF_WIDTH - HULL_INSET
 	if absf(lateral) <= limit:
+		_banked = false
 		return
 	var side := signf(lateral)
 	global_position -= frame.right * (lateral - side * limit)
 	var outward: float = velocity.dot(frame.right) * side
+	if outward > 0.0 and not _banked and not capsized and not remounting:
+		_roll_vel += side * minf(outward, 9.0) * BANK_ROLL
+	_banked = true
 	if outward > 0.0:
 		velocity -= frame.right * side * outward
 	if forward.dot(frame.right) * side > 0.02:
@@ -209,13 +338,14 @@ func _apply_pose() -> void:
 	var pitch := clampf(-slope * 0.42, -0.38, 0.38)
 	var heading_right := forward.cross(Vector3.UP).normalized()
 	basis = basis.rotated(heading_right, pitch)
-	var roll := clampf(_yaw_rate * 0.18, -0.22, 0.22)
-	basis = basis.rotated(forward, roll)
+	basis = basis.rotated(forward, _roll)
 	global_transform = Transform3D(basis, pos)
 
 
 func _animate_paddles(delta: float) -> void:
-	var steer_visual := clampf(-_yaw_rate / TURN_RATE, -1.0, 1.0)
+	var steer_visual := 0.0
+	if not capsized and not remounting:
+		steer_visual = clampf(-_yaw_rate / TURN_RATE, -1.0, 1.0)
 	var rate := 1.5 + speed * 0.16 + absf(steer_visual) * 3.0
 	_paddle_phase += delta * rate
 	var stroke := sin(_paddle_phase)
